@@ -1,115 +1,161 @@
 import streamlit as st
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, concatenate_videoclips
 import torch
-from diffusers import TextToVideoSDPipeline, DPMSolverMultistepScheduler
+from diffusers import TextToVideoSDPipeline
 import tempfile
 import os
-from PIL import Image
-import base64
 import numpy as np
+from PIL import Image
+import gc
 
 # تعيين إعدادات الصفحة
 st.set_page_config(
-    page_title="منشئ الفيديوهات بالذكاء الاصطناعي",
+    page_title="منشئ الفيديوهات السريع",
     page_icon="🎥",
     layout="wide"
 )
 
+# تحسين استخدام الذاكرة
 @st.cache_resource
 def load_model():
-    """تحميل النموذج مع التخزين المؤقت"""
+    """تحميل النموذج مع تحسينات الأداء"""
     pipe = TextToVideoSDPipeline.from_pretrained(
-        "damo-vilab/text-to-video-ms-1.7b",
-        torch_dtype=torch.float16,
-        variant="fp16"
+        "cerspense/zeroscope_v2_576w",  # نموذج أخف وأسرع
+        torch_dtype=torch.float16
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
     
     if torch.cuda.is_available():
-        pipe = pipe.to("cuda")
+        pipe.enable_model_cpu_offload()  # تحسين استخدام الذاكرة
+        pipe.enable_vae_slicing()  # تحسين أداء VAE
     else:
         pipe = pipe.to("cpu")
     
     return pipe
 
-def create_download_link(video_path):
-    """إنشاء رابط لتحميل الفيديو"""
-    with open(video_path, 'rb') as f:
-        bytes = f.read()
-        b64 = base64.b64encode(bytes).decode()
-        href = f'<a href="data:file/mp4;base64,{b64}" download="generated_video.mp4">اضغط هنا لتحميل الفيديو</a>'
-        return href
+def clear_memory():
+    """تنظيف الذاكرة"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-def generate_video(pipe, prompt, duration=5):
-    """توليد فيديو باستخدام نموذج الذكاء الاصطناعي"""
-    num_frames = duration * 8  # 8 FPS
-    
-    # توليد الفيديو
-    video_frames = pipe(
-        prompt,
-        num_inference_steps=25,
-        num_frames=num_frames,
-        height=256,  # تقليل حجم الإطار للأداء الأفضل
-        width=256
-    ).frames
-    
-    # تحويل الإطارات إلى مصفوفة NumPy
-    video_frames_np = np.array([np.array(frame) for frame in video_frames])
-    
-    # حفظ الفيديو مؤقتاً
-    temp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(temp_dir, "generated_video.mp4")
-    
-    # إنشاء VideoFileClip من الإطارات
-    clip = VideoFileClip(video_frames_np, fps=8)
-    clip.write_videofile(output_path, codec='libx264', fps=8)
-    
-    return output_path
+def generate_video(pipe, prompt, num_frames=24):
+    """توليد فيديو مع إعدادات محسنة"""
+    try:
+        # إعدادات محسنة لتوليد أسرع
+        video_frames = pipe(
+            prompt,
+            num_inference_steps=20,  # تقليل خطوات الاستدلال
+            num_frames=num_frames,
+            height=320,  # تقليل الحجم للسرعة
+            width=576,
+            guidance_scale=7.0  # تقليل مقياس التوجيه
+        ).frames
+        
+        # تحويل الإطارات إلى فيديو
+        temp_dir = tempfile.mkdtemp()
+        output_path = os.path.join(temp_dir, "generated_video.mp4")
+        
+        # حفظ كإطارات مؤقتة
+        frames_array = np.array([np.array(frame) for frame in video_frames])
+        
+        # إنشاء الفيديو بإعدادات محسنة
+        clip = VideoFileClip(frames_array, fps=8)
+        clip.write_videofile(
+            output_path,
+            fps=8,
+            codec='libx264',
+            preset='ultrafast',
+            threads=4
+        )
+        
+        clear_memory()  # تنظيف الذاكرة بعد التوليد
+        return output_path
+        
+    except Exception as e:
+        raise Exception(f"خطأ في توليد الفيديو: {str(e)}")
 
 def main():
-    st.title("🎥 منشئ الفيديوهات بالذكاء الاصطناعي")
+    st.title("🎥 منشئ الفيديوهات السريع")
     
-    # إضافة شريط تقدم التحميل
-    with st.spinner('جاري تحميل النموذج... (قد يستغرق هذا بضع دقائق في المرة الأولى)'):
+    # إضافة معلومات مفيدة
+    st.info("""
+    نصائح للحصول على أفضل النتائج:
+    - استخدم وصفاً قصيراً وواضحاً
+    - اختر المدة القصيرة للحصول على نتائج أسرع
+    - جرب الوضع السريع أولاً قبل استخدام الجودة العالية
+    """)
+    
+    # تحميل النموذج
+    with st.spinner('جاري تحميل النموذج...'):
         try:
             pipe = load_model()
-            st.success('تم تحميل النموذج بنجاح!')
+            st.success('✅ تم تحميل النموذج بنجاح!')
         except Exception as e:
             st.error(f"خطأ في تحميل النموذج: {str(e)}")
             return
     
-    # إدخال النص الوصفي
-    prompt = st.text_input(
-        "أدخل وصفاً للفيديو الذي تريد إنشاءه",
-        "مشهد لغروب الشمس على الشاطئ"
-    )
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        duration = st.slider("مدة الفيديو (بالثواني)", 3, 10, 5)
-    
-    with col2:
-        quality = st.select_slider(
-            "جودة الفيديو",
-            options=["منخفضة", "متوسطة", "عالية"],
-            value="متوسطة"
+    # إعدادات توليد الفيديو
+    with st.form("video_generation_form"):
+        prompt = st.text_input(
+            "وصف الفيديو",
+            placeholder="مثال: غروب الشمس على الشاطئ"
         )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            mode = st.radio(
+                "وضع التوليد",
+                options=["سريع", "عالي الجودة"],
+                index=0
+            )
+        
+        with col2:
+            if mode == "سريع":
+                num_frames = st.slider("عدد الإطارات", 16, 24, 20)
+            else:
+                num_frames = st.slider("عدد الإطارات", 24, 32, 28)
+        
+        submitted = st.form_submit_button("إنشاء الفيديو")
     
-    if st.button("إنشاء الفيديو", type="primary"):
-        with st.spinner('جاري إنشاء الفيديو... يرجى الانتظار'):
-            try:
-                video_path = generate_video(pipe, prompt, duration)
-                
-                # عرض الفيديو
-                st.video(video_path)
-                
-                # إضافة زر التحميل
-                st.markdown(create_download_link(video_path), unsafe_allow_html=True)
-                
-            except Exception as e:
-                st.error(f"حدث خطأ أثناء إنشاء الفيديو: {str(e)}")
-                st.info("نصيحة: حاول استخدام وصف أبسط أو تقليل مدة الفيديو")
+    if submitted and prompt:
+        try:
+            # إظهار شريط التقدم
+            progress_text = "جاري إنشاء الفيديو..."
+            progress_bar = st.progress(0)
+            
+            # توليد الفيديو مع تحديث التقدم
+            for i in range(100):
+                progress_bar.progress(i + 1)
+                if i == 20:
+                    st.info("جاري معالجة الوصف...")
+                elif i == 40:
+                    st.info("جاري توليد الإطارات...")
+                elif i == 60:
+                    st.info("جاري دمج الإطارات...")
+                elif i == 80:
+                    st.info("جاري تحسين الفيديو...")
+            
+            video_path = generate_video(pipe, prompt, num_frames)
+            
+            # عرض الفيديو
+            st.video(video_path)
+            
+            # إضافة زر التحميل
+            with open(video_path, 'rb') as f:
+                st.download_button(
+                    label="تحميل الفيديو",
+                    data=f,
+                    file_name="generated_video.mp4",
+                    mime="video/mp4"
+                )
+            
+            # تنظيف الذاكرة
+            clear_memory()
+            
+        except Exception as e:
+            st.error(f"حدث خطأ: {str(e)}")
+            st.info("حاول مرة أخرى مع وصف أبسط أو عدد إطارات أقل")
 
 if __name__ == "__main__":
     main()
