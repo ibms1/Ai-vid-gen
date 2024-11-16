@@ -1,24 +1,24 @@
 import streamlit as st
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 import torch
-from diffusers import DiffusionPipeline, DPMSolverMultistepScheduler
+from diffusers import TextToVideoSDPipeline, DPMSolverMultistepScheduler
 import tempfile
 import os
 from PIL import Image
 import base64
+import numpy as np
 
-def create_download_link(video_path):
-    """إنشاء رابط لتحميل الفيديو"""
-    with open(video_path, 'rb') as f:
-        bytes = f.read()
-        b64 = base64.b64encode(bytes).decode()
-        href = f'<a href="data:file/mp4;base64,{b64}" download="generated_video.mp4">اضغط هنا لتحميل الفيديو</a>'
-        return href
+# تعيين إعدادات الصفحة
+st.set_page_config(
+    page_title="منشئ الفيديوهات بالذكاء الاصطناعي",
+    page_icon="🎥",
+    layout="wide"
+)
 
-def generate_video(prompt, duration=5):
-    """توليد فيديو باستخدام نموذج الذكاء الاصطناعي"""
-    # تهيئة النموذج باستخدام إعدادات خفيفة
-    pipe = DiffusionPipeline.from_pretrained(
+@st.cache_resource
+def load_model():
+    """تحميل النموذج مع التخزين المؤقت"""
+    pipe = TextToVideoSDPipeline.from_pretrained(
         "damo-vilab/text-to-video-ms-1.7b",
         torch_dtype=torch.float16,
         variant="fp16"
@@ -30,36 +30,76 @@ def generate_video(prompt, duration=5):
     else:
         pipe = pipe.to("cpu")
     
+    return pipe
+
+def create_download_link(video_path):
+    """إنشاء رابط لتحميل الفيديو"""
+    with open(video_path, 'rb') as f:
+        bytes = f.read()
+        b64 = base64.b64encode(bytes).decode()
+        href = f'<a href="data:file/mp4;base64,{b64}" download="generated_video.mp4">اضغط هنا لتحميل الفيديو</a>'
+        return href
+
+def generate_video(pipe, prompt, duration=5):
+    """توليد فيديو باستخدام نموذج الذكاء الاصطناعي"""
+    num_frames = duration * 8  # 8 FPS
+    
     # توليد الفيديو
     video_frames = pipe(
         prompt,
         num_inference_steps=25,
-        num_frames=duration * 8
+        num_frames=num_frames,
+        height=256,  # تقليل حجم الإطار للأداء الأفضل
+        width=256
     ).frames
-
+    
+    # تحويل الإطارات إلى مصفوفة NumPy
+    video_frames_np = np.array([np.array(frame) for frame in video_frames])
+    
     # حفظ الفيديو مؤقتاً
     temp_dir = tempfile.mkdtemp()
     output_path = os.path.join(temp_dir, "generated_video.mp4")
     
-    # تحويل الإطارات إلى فيديو
-    video_clip = VideoFileClip(video_frames)
-    video_clip.write_videofile(output_path, fps=8, codec='libx264')
+    # إنشاء VideoFileClip من الإطارات
+    clip = VideoFileClip(video_frames_np, fps=8)
+    clip.write_videofile(output_path, codec='libx264', fps=8)
     
     return output_path
 
 def main():
-    st.title("منشئ الفيديوهات بالذكاء الاصطناعي")
+    st.title("🎥 منشئ الفيديوهات بالذكاء الاصطناعي")
+    
+    # إضافة شريط تقدم التحميل
+    with st.spinner('جاري تحميل النموذج... (قد يستغرق هذا بضع دقائق في المرة الأولى)'):
+        try:
+            pipe = load_model()
+            st.success('تم تحميل النموذج بنجاح!')
+        except Exception as e:
+            st.error(f"خطأ في تحميل النموذج: {str(e)}")
+            return
     
     # إدخال النص الوصفي
-    prompt = st.text_input("أدخل وصفاً للفيديو الذي تريد إنشاءه", "مشهد لغروب الشمس على الشاطئ")
+    prompt = st.text_input(
+        "أدخل وصفاً للفيديو الذي تريد إنشاءه",
+        "مشهد لغروب الشمس على الشاطئ"
+    )
     
-    # إعدادات إضافية
-    duration = st.slider("مدة الفيديو (بالثواني)", 3, 10, 5)
+    col1, col2 = st.columns(2)
     
-    if st.button("إنشاء الفيديو"):
-        with st.spinner('جاري إنشاء الفيديو...'):
+    with col1:
+        duration = st.slider("مدة الفيديو (بالثواني)", 3, 10, 5)
+    
+    with col2:
+        quality = st.select_slider(
+            "جودة الفيديو",
+            options=["منخفضة", "متوسطة", "عالية"],
+            value="متوسطة"
+        )
+    
+    if st.button("إنشاء الفيديو", type="primary"):
+        with st.spinner('جاري إنشاء الفيديو... يرجى الانتظار'):
             try:
-                video_path = generate_video(prompt, duration)
+                video_path = generate_video(pipe, prompt, duration)
                 
                 # عرض الفيديو
                 st.video(video_path)
@@ -69,6 +109,7 @@ def main():
                 
             except Exception as e:
                 st.error(f"حدث خطأ أثناء إنشاء الفيديو: {str(e)}")
+                st.info("نصيحة: حاول استخدام وصف أبسط أو تقليل مدة الفيديو")
 
 if __name__ == "__main__":
     main()

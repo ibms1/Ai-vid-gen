@@ -1,5 +1,8 @@
-diffusers
-moviepy
-Pillow
-streamlit
-torch
+streamlit>=1.28.0
+torch>=2.0.0
+diffusers>=0.24.0
+transformers>=4.35.0
+moviepy>=1.0.3
+pillow>=10.0.0
+accelerate>=0.24.0
+safetensors>=0.4.0
